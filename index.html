@@ -1,0 +1,286 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <title>Mini Browser</title>
+  <style>
+    * {
+      box-sizing: border-box;
+      font-family: sans-serif;
+    }
+
+    body {
+      margin: 0;
+      display: flex;
+      flex-direction: column;
+      height: 100vh;
+      background: #181818;
+      color: #fff;
+    }
+
+    #toolbar {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      background: #252525;
+      padding: 8px;
+    }
+
+    #toolbar button,
+    #toolbar input {
+      border: none;
+      background: #3a3a3a;
+      color: #fff;
+      padding: 6px 10px;
+      border-radius: 6px;
+      font-size: 14px;
+    }
+
+    #toolbar button:hover {
+      background: #4e4e4e;
+      cursor: pointer;
+    }
+
+    #address {
+      flex: 1;
+    }
+
+    #tabs {
+      margin-left: auto;
+      display: flex;
+      gap: 4px;
+    }
+
+    .tab {
+      min-width: 60px;
+      text-align: center;
+      user-select: none;
+    }
+
+    .tab.active {
+      background: #0d6efd;
+    }
+
+    #views {
+      flex: 1;
+      position: relative;
+    }
+
+    webview {
+      position: absolute;
+      inset: 0;
+      width: 100%;
+      height: 100%;
+    }
+
+    webview.hidden {
+      display: none;
+    }
+
+    #ctx {
+      position: fixed;
+      z-index: 999;
+      background: #2b2b2b;
+      border: 1px solid #4e4e4e;
+      border-radius: 6px;
+      display: none;
+    }
+
+    #ctx button {
+      display: block;
+      width: 180px;
+      padding: 6px 10px;
+      text-align: left;
+      background: transparent;
+      border: none;
+      color: #fff;
+    }
+
+    #ctx button:hover {
+      background: #3f3f3f;
+      cursor: pointer;
+    }
+  </style>
+</head>
+<body>
+
+  <div id="ctx"></div>
+
+  <div id="toolbar">
+    <button id="back">←</button>
+    <button id="forward">→</button>
+    <button id="reload">⟳</button>
+    <input id="address" placeholder="Search or enter URL" autocomplete="off" />
+    <button id="go">Go</button>
+    <a id="historyLink" href="history.html" target="_blank" style="padding: 6px 10px; background:#3a3a3a; color: white; border-radius: 6px; text-decoration: none; user-select: none;">
+      🕓 History
+    </a>
+    <div id="tabs">
+      <button id="addTabBtn">＋</button>
+    </div>
+  </div>
+
+  <div id="views"></div>
+
+  <script>
+    const defaultHome = "https://www.google.com";
+
+    let webviews = [];
+    let current = -1;
+    const tabsBar = document.getElementById('tabs');
+    const views = document.getElementById('views');
+    const ctx = document.getElementById('ctx');
+    const address = document.getElementById('address');
+
+    const activeWV = () => webviews[current];
+    const updAddr = () => address.value = activeWV()?.getURL() || '';
+
+    function makeTabButton(idx) {
+      const b = document.createElement('button');
+      b.className = 'tab';
+      b.dataset.idx = idx;
+      b.textContent = `Tab ${idx + 1}`;
+      b.onclick = () => switchTab(idx);
+      tabsBar.insertBefore(b, document.getElementById('addTabBtn'));
+    }
+
+    function switchTab(idx) {
+      if (idx === current) return;
+      if (current >= 0) {
+        webviews[current].classList.add('hidden');
+        document.querySelector(`[data-idx="${current}"]`).classList.remove('active');
+      }
+      current = idx;
+      webviews[current].classList.remove('hidden');
+      document.querySelector(`[data-idx="${current}"]`).classList.add('active');
+      updAddr();
+    }
+
+    function createWebview(url) {
+      const idx = webviews.length;
+      const wv = document.createElement('webview');
+      wv.src = url;
+      wv.preload = 'preload.js';
+      wv.partition = `persist:${idx}`;
+      wv.className = 'hidden';
+      wv.style = 'position:absolute;inset:0;width:100%;height:100%';
+      views.appendChild(wv);
+      webviews.push(wv);
+      makeTabButton(idx);
+
+      ['did-navigate', 'did-navigate-in-page', 'did-finish-load'].forEach(evt => {
+        wv.addEventListener(evt, () => wv === activeWV() && updAddr());
+      });
+
+      wv.addEventListener('ipc-message', e => {
+        if (e.channel === 'show-menu') {
+          const rect = wv.getBoundingClientRect();
+          const { x, y, params } = e.args[0];
+          showContextMenu(rect.left + x, rect.top + y, params);
+        }
+        if (e.channel === 'hide-menu') ctx.style.display = 'none';
+        if (e.channel === 'new-tab') addTab(e.args[0]);
+      });
+
+      wv.addEventListener('new-window', e => addTab(e.url));
+
+      return idx;
+    }
+
+    function addTab(url = defaultHome) {
+      const idx = createWebview(url);
+      switchTab(idx);
+    }
+
+    back.onclick = () => activeWV()?.canGoBack() && activeWV().goBack();
+    forward.onclick = () => activeWV()?.canGoForward() && activeWV().goForward();
+    reload.onclick = () => activeWV()?.reload();
+
+    function toURL(txt) {
+      return /^https?:\/\//i.test(txt)
+        ? txt
+        : `https://www.google.com/search?q=${encodeURIComponent(txt)}`;
+    }
+
+    function navigate(t) {
+      activeWV()?.loadURL(toURL(t));
+    }
+
+    go.onclick = () => navigate(address.value);
+    address.addEventListener('keydown', e => e.key === 'Enter' && navigate(e.target.value));
+
+    const mk = (txt, fn) => {
+      const b = document.createElement('button');
+      b.textContent = txt;
+      b.onclick = () => {
+        fn();
+        ctx.style.display = 'none';
+      };
+      return b;
+    };
+
+    function showContextMenu(x, y, p = {}) {
+      ctx.innerHTML = '';
+      ctx.appendChild(mk('Back', () => activeWV().canGoBack() && activeWV().goBack()));
+      ctx.appendChild(mk('Forward', () => activeWV().canGoForward() && activeWV().goForward()));
+      ctx.appendChild(mk('Reload', () => activeWV().reload()));
+      ctx.appendChild(mk('Inspect', () => activeWV().openDevTools()));
+
+      if (p.linkURL) {
+        ctx.appendChild(mk('Open Link', () => activeWV().loadURL(p.linkURL)));
+        ctx.appendChild(mk('Open Link in New Tab', () => addTab(p.linkURL)));
+      }
+
+      if (p.mediaSrc) {
+        ctx.appendChild(mk('Open Media in Tab', () => addTab(p.mediaSrc)));
+        ctx.appendChild(mk('Copy Media URL', () => navigator.clipboard.writeText(p.mediaSrc)));
+      }
+
+      if (p.selectionText?.trim()) {
+        const t = p.selectionText.trim();
+        ctx.appendChild(mk('Copy', () => navigator.clipboard.writeText(t)));
+        ctx.appendChild(
+          mk(`Search "${t.slice(0, 20)}${t.length > 20 ? '…' : ''}"`, () =>
+            activeWV().loadURL(`https://www.google.com/search?q=${encodeURIComponent(t)}`)
+          )
+        );
+      }
+
+      ctx.style.visibility = 'hidden';
+      ctx.style.display = 'block';
+
+      const r = ctx.getBoundingClientRect();
+      const vw = innerWidth, vh = innerHeight;
+
+      if (x + r.width > vw) x = vw - r.width - 5;
+      if (x < 5) x = 5;
+      if (y + r.height > vh) y = vh - r.height - 5;
+      if (y < 5) y = 5;
+
+      ctx.style.left = `${x}px`;
+      ctx.style.top = `${y}px`;
+      ctx.style.visibility = 'visible';
+    }
+
+    document.addEventListener('pointerdown', e => !ctx.contains(e.target) && (ctx.style.display = 'none'));
+    addTabBtn.onclick = () => addTab();
+    window.addEventListener('DOMContentLoaded', () => addTab(defaultHome));
+
+    const { ipcRenderer } = require('electron');
+
+    address.addEventListener('keydown', e => {
+      if (e.key === 'Enter') {
+        const val = e.target.value.trim();
+        if (val) ipcRenderer.send('save-search', val);
+      }
+    });
+
+    const historyBtn = document.createElement('button');
+    historyBtn.textContent = 'History';
+    historyBtn.className = 'tab';
+    historyBtn.style.userSelect = 'none';
+    historyBtn.onclick = () => addTab('history.html');
+    tabsBar.insertBefore(historyBtn, document.getElementById('addTabBtn'));
+  </script>
+</body>
+</html>
